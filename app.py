@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap, QPalette, QPainter
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QScrollArea, QMessageBox, QMainWindow, QMenu, QAction, \
-    qApp, QFileDialog
+    qApp, QFileDialog, QInputDialog
 
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
@@ -22,9 +22,9 @@ import os
 
 diro="/mnt/f/Data/AO001R_RGC_imaging/Image_00001_AO001R_896_512_600_20_1.57_6000_-ve0.25_10deg/padded/"
 dir_ssd="e:\drc"
-DEFAULT_LAYER=134
+DEFAULT_LAYER=0
 ANIMATE_TIME_MS=250
-
+MIP_=2
 
 class QImageViewer(QMainWindow):
     def __init__(self):
@@ -52,6 +52,11 @@ class QImageViewer(QMainWindow):
 
         self.scrollArea2 = QScrollArea()
         self.scrollArea2.setBackgroundRole(QPalette.Dark)
+        
+        #hbox = QHBoxLayout()
+        #hbox.addWidget(self.scrollArea2)
+        #hbox.addWidget(self.imageLabel2)
+
         self.scrollArea2.setWidget(self.imageLabel2)
         self.scrollArea2.setVisible(False)
         self.scrollArea2.width = 512
@@ -59,6 +64,7 @@ class QImageViewer(QMainWindow):
         
         
         self.doLog=False
+        self.doMIP=False
         #h_layout.AddWidget(self.scrollArea)
         #hbox = QHBoxLayout(self.scrollArea)
 
@@ -79,11 +85,11 @@ class QImageViewer(QMainWindow):
         self.label = QLabel(self)
         self.label.setFont(QFont('Arial', 18))
         self.label.setText('z-plane:')
-
-        self.fils=glob.glob(sys.argv[-1] )
-        self.minvol=int( os.path.basename(self.fils[0]).split('_')[0] )
-        self.maxvol=int( os.path.basename(self.fils[-1]).split('_')[0] )
+        
+        
+        #self.loadDir( sys.argv[-1] )
         self.nvol=0
+        self.nlayer=-1 # No image loaded year
         
         self.label_volume = QLabel(self)
         self.label_volume.setFont(QFont('Arial', 18))
@@ -93,6 +99,7 @@ class QImageViewer(QMainWindow):
 
         self.hbox.addWidget(self.scrollArea)
         self.hbox.addWidget(self.scrollArea2)    
+        #self.hbox.addLayout(hbox)   
         self.hbox.addWidget(self.label)
         self.hbox.addWidget(self.label_volume)
         
@@ -104,7 +111,9 @@ class QImageViewer(QMainWindow):
         self.createActions()
         self.createMenus()
 
-        self.init_image()
+        self.av_which="av2"
+
+        #self.init_image() # Maybe not ready
         
         self.setWindowTitle("Viewer")
         self.resize(1024, 925)
@@ -112,7 +121,12 @@ class QImageViewer(QMainWindow):
         self.setChildrenFocusPolicy(Qt.NoFocus)
 
         self.animating=False
-
+        
+    def loadDir(self, dir_and_wildcards):
+        self.fils=glob.glob( dir_and_wildcards )
+        #self.minvol=0 # %int( os.path.basename(self.fils[0]).split('_')[0] )
+        #self.maxvol=int( os.path.basename(self.fils[-1]).split('_')[0] )
+            
     def setChildrenFocusPolicy (self, policy):
         def recursiveSetChildFocusPolicy (parentQWidget):
             for childQWidget in parentQWidget.findChildren(QWidget):
@@ -121,16 +135,21 @@ class QImageViewer(QMainWindow):
         recursiveSetChildFocusPolicy(self)
         
     def keyPressEvent(self, event):
+        if (event.modifiers() & Qt.ControlModifier):
+            stride=10
+        else:
+            stride=1
+            
         if event.key() == Qt.Key_Up:
-            self.nlayer -= 1
+            self.nlayer -= stride
             self.choose_layer(self.nlayer)
         elif event.key() == Qt.Key_Down:
-            self.nlayer += 1
+            self.nlayer += stride
             self.choose_layer(self.nlayer)
         elif event.key() == Qt.Key_Left:
-            self.nextVol(-1)
+            self.nextVol(-stride)
         elif event.key() == Qt.Key_Right:
-            self.nextVol(1)
+            self.nextVol(stride)
             
         elif event.key() == Qt.Key_A:
             self.animating = not self.animating
@@ -150,7 +169,7 @@ class QImageViewer(QMainWindow):
             self.nvol=len(self.fils)-1
         if self.nvol>len(self.fils)-1:
             self.nvol=0
-        self.loadh5(self.nvol)
+        self.load1(self.nvol)
         
     def getPos(self , event):
             x = event.pos().x()
@@ -163,13 +182,49 @@ class QImageViewer(QMainWindow):
             self.nlayer = y
         
     def choose_layer(self,n,first_time=False):
+    
+        n_depths=np.shape(self.dset)[2]
+        if n>=n_depths: # Don't go past max depth
+            n=n_depths
+            
         data=self.dset[:,:,int(n)]
         
         self.nlayer=n
         
+        if self.doMIP and (n>=2) and (n<(n_depths+3)):
+            # Max. intensity projection. Take max in layer-2 to layer+2
+            data=self.dset[:,:,int(n)-2:int(n)+3]
+            data=np.max(data,2)
+        else:
+            self.doMIP=False # Can't do MIP at edge of depths
+            
         if self.doLog:
+            data=np.array(data)
+            print ( np.shape(data), np.nanmean(data), np.max(data) )
             data=np.log10(data)
-            data_bits=np.array((data.T/np.max(data)*255.0),dtype='uint8')
+            data[np.isinf(data)]=np.nan
+            data[data<1]=np.nan;
+            mean1=np.nanmean(data);
+            std1=np.nanstd(data);
+            
+            # Clamp to +/- 'X' stds
+            data[(data-mean1)>(std1*6)] = mean1+6*std1;
+            data[(data-mean1)<-(std1*3)] = mean1-3*std1;
+            
+            mean2=np.nanmean(data);
+            std2=np.nanstd(data);
+            data=(data-mean2)/(5*std2) + 0.5;
+            #data -= np.min(data) # Make smallest == zero
+            data[np.isnan(data)]=0
+            data[np.isinf(data)]=0
+            
+            print( np.histogram(data) )
+            # Clamp
+            data[data<0]=0;
+            data[data>1]=1;
+
+            print (np.max(data), np.mean(data), np.min(data), mean1, std1, mean2, std2 )
+            data_bits=np.array((10**data.T/np.max(10**data)*255.0),dtype='uint8')
         else: 
             data_bits=np.array((data.T/np.max(data)*255.0),dtype='uint8')
             
@@ -196,21 +251,39 @@ class QImageViewer(QMainWindow):
         self.imageLabel2.setPixmap(QPixmap.fromImage(self.image2.scaled(600,200)) )
         self.imageLabel2.adjustSize()
     
-    def loadh5(self,nvol):
+    def update_display(self):
+        self.label_volume.setText( '%s (%d of %d)'%(self.filname,self.nvol+1, len(self.fils)) )        
+        self.choose_layer(self.nlayer)
+        
+    def load1(self,nvol):
         self.nvol=nvol
-        filname=self.fils[ nvol ]#os.path.join(dir_ssd, '%05d_vol.h5'%volnum)
+        self.filname=self.fils[ nvol ]#os.path.join(dir_ssd, '%05d_vol.h5'%volnum)
+
+        # TODO: get extension in better way
+        if self.filname[-2:]=='h5':
+            self.loadh5(self.filname)
+        elif self.filname[-3:]=='mat':
+            self.loadMat(self.filname)
+            
+        self.update_display()
+    
+    def loadh5(self,filname):
         fil=h5py.File( filname ) #'test_av.h5') ) #'00188_vol.h5'))
         self.dset=fil['real']
-        self.avg = fil['av3'][:]
-        self.label_volume.setText( '%03d %s %03d (%d of %d)'%(self.minvol,filname,self.maxvol,self.nvol+1, len(self.fils)) )
-        
-        self.choose_layer(self.nlayer)
+        self.avg = fil[self.av_which][:]
+
+    def loadMat(self,filname):
+        fil=h5py.File( filname ) # Newer MATLAB (>=7.3) use hdf files !
+        self.dset=fil[list(fil.keys())[0]]['real']
+        self.avg = np.mean( self.dset, 1) 
     
     def init_image(self):
         #data_all=dset[:,:,:] # Dimensions are shuffled vs. MATLAB (MATLAB is "fortran order, vs. C order for the rest of the world")
         # https://swharden.com/blog/2013-06-03-realtime-image-pixelmap-from-numpy-array-data-in-qt/
         self.nlayer=DEFAULT_LAYER
-        self.loadh5(0)
+        
+        self.load1(0)
+
         #self.imageLabel2.setMouseTracking(True)
         self.imageLabel2.mousePressEvent = self.getPos
 
@@ -244,8 +317,26 @@ class QImageViewer(QMainWindow):
         #                                          'Images (*.png *.jpeg *.jpg *.bmp *.gif)', options=options)
                                                   
  
+       #thedir = QFileDialog.getExistingDirectory(self, "Open Directory",
+       #                                      "e:\drc" )
+       #                                     # QFileDialog.ShowDirsOnly
+       #                                      # QFileDialog.DontResolveSymlinks);
+        thedir = QFileDialog.getOpenFileName(self, "Choose file in directory",
+                                             "e:\drc", "All files (*.*)" );
+                                            # QFileDialog.ShowDirsOnly
+                                             # QFileDialog.DontResolveSymlinks);
+                                                                        
+        thedir=os.path.dirname(thedir[0]) # Now it's a file dialog, so get the dirname from the filname
 
-        if True:
+        print (thedir)
+        
+        text, ok = QInputDialog.getText(self, 'Filename wildcards', 'Enter wildcards:')
+        self.loadDir( os.path.join( thedir, text) )
+        if self.nlayer==-1:
+            self.init_image() # First-time init of image widget
+        self.nextVol(0) # todo: "update screen"
+
+        if False:
             #image = QImage(fileName)
             if image.isNull():
                 QMessageBox.information(self, "Image Viewer", "Cannot load %s." % fileName)
@@ -308,8 +399,20 @@ class QImageViewer(QMainWindow):
         
     def logNorm(self):
         self.doLog=not self.doLog
-        if self.doLog:
-            self.logNormAct.checked=True
+        self.logNormAct.checked=self.doLog
+        self.update_display()
+            
+    def MIP(self):
+        self.doMIP=not self.doMIP
+        self.MIPAct.checked=self.doMIP
+        self.update_display()
+
+    def av2(self):
+        self.av_which="av2"
+        self.update_display()
+    def av3(self):
+        self.av_which="av3"
+        self.update_display()
     
     def about(self):
         QMessageBox.about(self, "About Image Viewer",
@@ -338,8 +441,14 @@ class QImageViewer(QMainWindow):
         self.fitToWindowAct = QAction("&Fit to Window", self, enabled=False, checkable=True, shortcut="Ctrl+F",
                                       triggered=self.fitToWindow)
 
+        self.MIPAct = QAction("&MIP (-2 to +2)", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+M",
+                                      triggered=self.MIP)
         self.logNormAct = QAction("&Log Normalize", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+L",
                                       triggered=self.logNorm)
+        self.av2Act = QAction("av&2", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+2",
+                                      triggered=self.av2)
+        self.av3Act = QAction("av&3", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+3",
+                                      triggered=self.av3)
                                       
         self.aboutAct = QAction("&About", self, triggered=self.about)
         self.aboutQtAct = QAction("About &Qt", self, triggered=qApp.aboutQt)
@@ -359,7 +468,11 @@ class QImageViewer(QMainWindow):
         self.viewMenu.addSeparator()
         self.viewMenu.addAction(self.fitToWindowAct)
         self.viewMenu.addSeparator()
+        self.viewMenu.addAction(self.MIPAct)
         self.viewMenu.addAction(self.logNormAct)
+        self.viewMenu.addSeparator()
+        self.viewMenu.addAction(self.av2Act)
+        self.viewMenu.addAction(self.av3Act)
 
         self.helpMenu = QMenu("&Help", self)
         self.helpMenu.addAction(self.aboutAct)
@@ -395,8 +508,6 @@ if __name__ == '__main__':
     import glob
     import os
     from PyQt5.QtWidgets import QApplication
-
-
     
     app = QApplication(sys.argv)
     imageViewer = QImageViewer()

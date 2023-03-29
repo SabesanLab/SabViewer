@@ -85,9 +85,9 @@ class QImageViewer(QMainWindow):
         self.label = QLabel(self)
         self.label.setFont(QFont('Arial', 18))
         self.label.setText('z-plane:')
-        
-        
+       
         #self.loadDir( sys.argv[-1] )
+        self.defdir='.' # default directory. Command-line (or drag-drop) may override
         self.nvol=0
         self.nlayer=-1 # No image loaded year
         
@@ -185,10 +185,12 @@ class QImageViewer(QMainWindow):
     
         n_depths=np.shape(self.dset)[2]
         if n>=n_depths: # Don't go past max depth
-            n=n_depths
+            n=0 #n_depths-1
             
         data=self.dset[:,:,int(n)]
-        
+        #shap=np.shape( data) ;
+        #data = np.reshape( data, (shap[1], shap[0]) ) ;
+
         self.nlayer=n
         
         if self.doMIP and (n>=2) and (n<(n_depths+3)):
@@ -268,14 +270,14 @@ class QImageViewer(QMainWindow):
         self.update_display()
     
     def loadh5(self,filname):
-        fil=h5py.File( filname ) #'test_av.h5') ) #'00188_vol.h5'))
-        self.dset=fil['real']
-        self.avg = fil[self.av_which][:]
+        self.fil=h5py.File( filname ) #'test_av.h5') ) #'00188_vol.h5'))
+        self.dset=self.fil['real']
+        self.avg = self.fil[self.av_which][:]
 
     def loadMat(self,filname):
         fil=h5py.File( filname ) # Newer MATLAB (>=7.3) use hdf files !
-        self.dset=fil[list(fil.keys())[0]]['real']
-        self.avg = np.mean( self.dset, 1) 
+        self.dset=fil[list(fil.keys())[0]]
+        self.avg = np.mean( self.dset, 1)  # rebuild average
     
     def init_image(self):
         #data_all=dset[:,:,:] # Dimensions are shuffled vs. MATLAB (MATLAB is "fortran order, vs. C order for the rest of the world")
@@ -322,7 +324,7 @@ class QImageViewer(QMainWindow):
        #                                     # QFileDialog.ShowDirsOnly
        #                                      # QFileDialog.DontResolveSymlinks);
         thedir = QFileDialog.getOpenFileName(self, "Choose file in directory",
-                                             "e:\drc", "All files (*.*)" );
+                                             self.defdir, "All files (*.*)" );
                                             # QFileDialog.ShowDirsOnly
                                              # QFileDialog.DontResolveSymlinks);
                                                                         
@@ -332,9 +334,10 @@ class QImageViewer(QMainWindow):
         
         text, ok = QInputDialog.getText(self, 'Filename wildcards', 'Enter wildcards:')
         self.loadDir( os.path.join( thedir, text) )
-        if self.nlayer==-1:
-            self.init_image() # First-time init of image widget
-        self.nextVol(0) # todo: "update screen"
+        if len(self.fils) > 0:
+            if self.nlayer==-1:
+                self.init_image() # First-time init of image widget
+            self.nextVol(0) # todo: "update screen"
 
         if False:
             #image = QImage(fileName)
@@ -409,26 +412,16 @@ class QImageViewer(QMainWindow):
 
     def av2(self):
         self.av_which="av2"
+        self.avg = self.fil[self.av_which][:]
         self.update_display()
     def av3(self):
         self.av_which="av3"
+        self.avg = self.fil[self.av_which][:]
         self.update_display()
     
     def about(self):
         QMessageBox.about(self, "About Image Viewer",
-                          "<p>The <b>Image Viewer</b> example shows how to combine "
-                          "QLabel and QScrollArea to display an image. QLabel is "
-                          "typically used for displaying text, but it can also display "
-                          "an image. QScrollArea provides a scrolling view around "
-                          "another widget. If the child widget exceeds the size of the "
-                          "frame, QScrollArea automatically provides scroll bars.</p>"
-                          "<p>The example demonstrates how QLabel's ability to scale "
-                          "its contents (QLabel.scaledContents), and QScrollArea's "
-                          "ability to automatically resize its contents "
-                          "(QScrollArea.widgetResizable), can be used to implement "
-                          "zooming and scaling features.</p>"
-                          "<p>In addition the example shows how to use QPainter to "
-                          "print an image.</p>")
+                          "<p>Sabesan Lab volume/directory browser.</p>")
 
     def createActions(self):
         self.openAct = QAction("&Open...", self, shortcut="Ctrl+O", triggered=self.open)
@@ -511,6 +504,9 @@ if __name__ == '__main__':
     
     app = QApplication(sys.argv)
     imageViewer = QImageViewer()
+    
+    if len(sys.argv)>1:
+        imageViewer.defdir=sys.argv[1]
     imageViewer.show()
     sys.exit(app.exec_())
     

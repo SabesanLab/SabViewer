@@ -1,1 +1,1 @@
-pyinstaller -D SabView.py
+pyinstaller --noconfirm -D SabView.py

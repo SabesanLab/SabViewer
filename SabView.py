@@ -1,8 +1,3 @@
-# This fork is derived from acbetter 
-# Have added fit to width function as requested on his forum
-# please visit https://gist.github.com/acbetter/e7d0c600fdc0865f4b0ee05a17b858f2 
-
-
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
@@ -19,6 +14,7 @@ from PyQt5.QtCore import *
 import numpy as np
 import h5py
 import os
+import skvideo # to read .avi
 
 diro="/mnt/f/Data/AO001R_RGC_imaging/Image_00001_AO001R_896_512_600_20_1.57_6000_-ve0.25_10deg/padded/"
 dir_ssd="e:\drc"
@@ -87,7 +83,8 @@ class QImageViewer(QMainWindow):
         self.label.setText('z-plane:')
        
         #self.loadDir( sys.argv[-1] )
-        self.defdir='.' # default directory. Command-line (or drag-drop) may override
+        self.def_dir='.' # default directory. Command-line (or drag-drop) may override
+        self.def_file='' # default directory. Command-line (or drag-drop) may override
         self.nvol=0
         self.nlayer=-1 # No image loaded year
         
@@ -185,7 +182,9 @@ class QImageViewer(QMainWindow):
     
         n_depths=np.shape(self.dset)[2]
         if n>=n_depths: # Don't go past max depth
-            n=0 #n_depths-1
+            n=n_depths-1
+        elif n<0:
+            n=0
             
         data=self.dset[:,:,int(n)]
         #shap=np.shape( data) ;
@@ -216,7 +215,7 @@ class QImageViewer(QMainWindow):
             mean2=np.nanmean(data);
             std2=np.nanstd(data);
             data=(data-mean2)/(5*std2) + 0.5;
-            #data -= np.min(data) # Make smallest == zero
+            #data -= np.min(data) # Make smallest == zero # && less than max layer # && less than max layer
             data[np.isnan(data)]=0
             data[np.isinf(data)]=0
             
@@ -231,15 +230,31 @@ class QImageViewer(QMainWindow):
             data_bits=np.array((data.T/np.max(data)*255.0),dtype='uint8')
             
         data_bits=np.require(data_bits, np.uint8, 'C')
-        image = QImage(data_bits.data, np.shape(data)[0], np.shape(data)[1], QImage.Format_Grayscale8)
+
+        # get the shape of the array
+        height, width = np.shape(data_bits)
+
+        # calculate the total number of bytes in the frame 
+        totalBytes = data_bits.nbytes
+
+        # divide by the number of rows
+        bytesPerLine = int(totalBytes/height)
+
+        # Needed to fix skew problem.
+        #https://stackoverflow.com/questions/41596940/qimage-skews-some-images-but-not-others
+
+        image = QImage(data_bits.data, width, height, bytesPerLine, QImage.Format_Grayscale8)
         self.imageLabel.setPixmap(QPixmap.fromImage(image))
         self.scaleFactor = 1.0
-        self.label.setText('%03d'%n)
+        self.label.setText('%03d of %03d'%(n+1,n_depths))
     
         # Update the axial across-section image
         av=self.avg # reload from image
         data_bits=np.array((av.T/np.max(av)*255.0),dtype='uint8')
-        data_bits[self.nlayer-1:self.nlayer+1,:] = 255;
+
+        if self.nlayer>0:  # && less than max layer
+            data_bits[self.nlayer-1:self.nlayer+1,:] = 255;
+
         data_bits=np.require(data_bits, np.uint8, 'C')
         
         if True:
@@ -262,10 +277,33 @@ class QImageViewer(QMainWindow):
         self.filname=self.fils[ nvol ]#os.path.join(dir_ssd, '%05d_vol.h5'%volnum)
 
         # TODO: get extension in better way
-        if self.filname[-2:]=='h5':
+        parts=os.path.splitext(self.filname)
+        print(parts)
+        if parts[1]=='.h5':
             self.loadh5(self.filname)
-        elif self.filname[-3:]=='mat':
+        elif parts[1]=='.mat':
             self.loadMat(self.filname)
+        elif parts[1]=='.avi':
+            import skvideo.io  
+            print("Loading...")
+            videodata = skvideo.io.vread(self.filname)
+
+            if len(videodata.shape)>3:
+                # Has color. Ignore by just taking mean across RGB
+                videodata=np.mean( videodata,3)
+                print("Transposing...")
+                self.dset=np.transpose( videodata, [1, 2, 0] ) # Reorder dims so it matches MATLAB
+                print( self.dset.shape )
+                #self.dset=np.reshape( self.dset, (self.dset.shape[1], self.dset.shape[0], self.dset.shape[2]) )
+            else:
+                self.dset=np.transpose( videodata, [1, 2, 0] ) # Works for raw videos from MATLAB
+            print("done...")
+            self.avg = np.zeros( (5,5,5)) # TODO: Doesn't matter. Nothing to show.
+            #self.dset=self.dset[..., np.newaxis] # Create a dummy last axial axis
+            #print(self.videodata.shape, self.dset.shape)
+            #print (np.max(self.dset[...,0]), np.mean(self.videodata[...,0]) )
+        else:
+            print('Unknown extension')
             
         self.update_display()
     
@@ -278,6 +316,10 @@ class QImageViewer(QMainWindow):
         fil=h5py.File( filname ) # Newer MATLAB (>=7.3) use hdf files !
         self.dset=fil[list(fil.keys())[0]]
         self.avg = np.mean( self.dset, 1)  # rebuild average
+
+    def load_single(self,filname):
+        self.fils = [filname]
+        self.init_image() # First-time init of image widget (also loads)
     
     def init_image(self):
         #data_all=dset[:,:,:] # Dimensions are shuffled vs. MATLAB (MATLAB is "fortran order, vs. C order for the rest of the world")
@@ -293,7 +335,6 @@ class QImageViewer(QMainWindow):
         
         self.scrollArea2.setVisible(True)
         self.imageLabel2.adjustSize()
-    
     
         if True:
             #image = QImage(fileName)
@@ -324,7 +365,7 @@ class QImageViewer(QMainWindow):
        #                                     # QFileDialog.ShowDirsOnly
        #                                      # QFileDialog.DontResolveSymlinks);
         thedir = QFileDialog.getOpenFileName(self, "Choose file in directory",
-                                             self.defdir, "All files (*.*)" );
+                                             self.def_dir, "All files (*.*)" );
                                             # QFileDialog.ShowDirsOnly
                                              # QFileDialog.DontResolveSymlinks);
                                                                         
@@ -506,10 +547,13 @@ if __name__ == '__main__':
     imageViewer = QImageViewer()
     
     if len(sys.argv)>1:
-        imageViewer.defdir=sys.argv[1]
+        param=sys.argv[1]
+        if os.path.isfile(param):
+            imageViewer.load_single(param)
+        elif os.path.exists(param):
+            imageViewer.def_dir=param # loadDir
     imageViewer.show()
     sys.exit(app.exec_())
-    
     
     # TODO QScrollArea support mouse
     # base on https://github.com/baoboa/pyqt5/blob/master/examples/widgets/imageviewer.py

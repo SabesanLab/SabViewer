@@ -16,6 +16,9 @@ import h5py
 import os
 import skvideo # to read .avi
 
+import pyshmem # Our shared memory routines
+from threading import Thread
+
 diro="/mnt/f/Data/AO001R_RGC_imaging/Image_00001_AO001R_896_512_600_20_1.57_6000_-ve0.25_10deg/padded/"
 dir_ssd="e:\drc"
 DEFAULT_LAYER=0
@@ -118,6 +121,14 @@ class QImageViewer(QMainWindow):
         self.setChildrenFocusPolicy(Qt.NoFocus)
 
         self.animating=False
+        self.setAcceptDrops(True)
+        
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat("text/plain"):
+            event.acceptProposedAction()    
+            
+    def dropEvent(self, e):
+        print (e.mimeData().text() )
         
     def loadDir(self, dir_and_wildcards):
         self.fils=glob.glob( dir_and_wildcards )
@@ -168,6 +179,7 @@ class QImageViewer(QMainWindow):
             self.nvol=0
         self.load1(self.nvol)
         
+    # Moving mouse in axial profile window
     def getPos(self , event):
             x = event.pos().x()
             y = event.pos().y()
@@ -177,7 +189,9 @@ class QImageViewer(QMainWindow):
             y=int(y)
             self.choose_layer(y)
             self.nlayer = y
-        
+
+
+      
     def choose_layer(self,n,first_time=False):
     
         n_depths=np.shape(self.dset)[2]
@@ -252,13 +266,22 @@ class QImageViewer(QMainWindow):
         av=self.avg # reload from image
         data_bits=np.array((av.T/np.max(av)*255.0),dtype='uint8')
 
-        if self.nlayer>0:  # && less than max layer
+        if self.nlayer>0:  # && less than max layer. Make bright bar indicating location
             data_bits[self.nlayer-1:self.nlayer+1,:] = 255;
 
         data_bits=np.require(data_bits, np.uint8, 'C')
         
         if True:
-            self.image2 = QImage(data_bits.data, np.shape(self.avg)[0], np.shape(self.avg)[1], QImage.Format_Grayscale8)   
+            # get the shape of the array
+            width, height = np.shape(self.avg)
+            print( height, width)
+
+            # calculate the total number of bytes in the frame 
+            totalBytes = data_bits.nbytes
+
+            # divide by the number of rows
+            bytesPerLine = int(totalBytes/height)        
+            self.image2 = QImage(data_bits.data, width, height, bytesPerLine, QImage.Format_Grayscale8)   
         else:
             self.image2.fromData(data_bits.data);
                
@@ -536,15 +559,26 @@ class QImageViewer(QMainWindow):
         scrollBar.setValue(int(factor * scrollBar.value()
                                + ((factor - 1) * scrollBar.pageStep() / 2)))
 
-
+def tester(data):
+    global imageViewer
+    print( np.shape(data), data )
+    imageViewer.dset=data
+    imageViewer.avg = np.mean( data, 1)
+    imageViewer.update_display()
+    
 if __name__ == '__main__':
     import sys
     import glob
     import os
+    global imageViewer
     from PyQt5.QtWidgets import QApplication
     
     app = QApplication(sys.argv)
     imageViewer = QImageViewer()
+
+    listener_thread = Thread(target=pyshmem.do_listen, args=[tester] )
+    listener_thread.daemon=True # So application will terminate even if this thread is alive
+    listener_thread.start()    
     
     if len(sys.argv)>1:
         param=sys.argv[1]

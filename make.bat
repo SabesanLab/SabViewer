@@ -1,4 +1,4 @@
-pyinstaller --noconfirm -D SabView.py
+pyinstaller --noconfirm --clean -D SabView.py
 
 rem YUCK! Need to copy in ffmpeg stuff
 rem TODO: Get appropriate directory from Windows path "where" etc

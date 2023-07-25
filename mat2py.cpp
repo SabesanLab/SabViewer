@@ -112,7 +112,7 @@ int socket_message(std::string message)
      cout << error;
      
     for( int retries=0; (socket.is_open() && socket.available() < 1 && retries<5 ); retries+=1) {
-        cerr << "waiting to shutdown... ";
+        //cerr << "waiting to shutdown... ";
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
      }
      

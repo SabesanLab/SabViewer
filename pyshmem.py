@@ -2,6 +2,7 @@ import mmap
 import numpy as np
 import socket
 import time
+import sys
 
 from threading import Thread
     
@@ -22,11 +23,11 @@ def do_listen(fn_callback):
         conn, addr = s.accept()
         with conn:
             print(f"Connected by {addr}")
-            while True:
+            while done==False:
                 data = conn.recv(1024) # Don't think this number matters too much
 
                 if len(data)==0:
-                    time.sleep(0.5)
+                    time.sleep(0.1)
                     continue
                     
                 print(data)
@@ -35,11 +36,16 @@ def do_listen(fn_callback):
                     done=False
                     break
           
-                if data==b'quit':
+                elif data==b'quit':
                     done=True
+                    sys.exit()
                     break
-          
-                if data[0:4]==b"send":
+                    
+                elif b'next' in data:
+                    amt=int(data[5:])
+                    fn_callback('next',amt)
+                    
+                elif data[0:4]==b"send":
                     str_dim=data[5:]
                     dims=str_dim.split(b',');
                     dims = np.array( [int(dim1) for dim1 in dims] )
@@ -54,7 +60,7 @@ def do_listen(fn_callback):
                     data = np.frombuffer(buf, dtype=np.float32).reshape(dims)
                     shmem.close()
                     
-                    fn_callback(data)
+                    fn_callback('data',data)
                     
                     break
             

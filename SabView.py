@@ -3,7 +3,6 @@
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap, QPalette, QPainter
-from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QScrollArea, QMessageBox, QMainWindow, QMenu, QAction, \
     qApp, QFileDialog, QInputDialog
 
@@ -14,7 +13,14 @@ from PyQt5.QtCore import *
 import numpy as np
 import h5py
 import os
-import skvideo # to read .avi
+import skvideo # to read/write .avi
+import skvideo.io  
+
+import sys
+import subprocess
+
+from PIL import Image
+import socket # remote control
 
 import pyshmem # Our shared memory routines
 from threading import Thread
@@ -23,13 +29,12 @@ diro="/mnt/f/Data/AO001R_RGC_imaging/Image_00001_AO001R_896_512_600_20_1.57_6000
 dir_ssd="e:\drc"
 DEFAULT_LAYER=0
 ANIMATE_TIME_MS=250
-MIP_=2
+MIP_PIXELS=5
 
 class QImageViewer(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.printer = QPrinter()
         self.scaleFactor = 0.0
 
         
@@ -45,16 +50,19 @@ class QImageViewer(QMainWindow):
         
         self.imageLabel2 = QLabel()
         self.imageLabel2.setBackgroundRole(QPalette.Base)
-        #self.imageLabel2.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.imageLabel2.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.imageLabel2.setScaledContents(True)
-        #self.imageLabel2.setVisible(False)
+        self.imageLabel2.setVisible(True)
 
+        self.b2 = QCheckBox("Valid")
+        #self.b2.toggled.connect(lambda:self.btnstate(self.b2))
+      
         self.scrollArea2 = QScrollArea()
         self.scrollArea2.setBackgroundRole(QPalette.Dark)
         
-        #hbox = QHBoxLayout()
-        #hbox.addWidget(self.scrollArea2)
-        #hbox.addWidget(self.imageLabel2)
+        self.top = QHBoxLayout()
+        self.top.addWidget(self.scrollArea2)
+        self.top.addWidget(self.b2)
 
         self.scrollArea2.setWidget(self.imageLabel2)
         self.scrollArea2.setVisible(False)
@@ -76,7 +84,10 @@ class QImageViewer(QMainWindow):
       
         #self.setCentralWidget(self.scrollArea)
         self.widget = QWidget(self)
-         
+        
+        self.checkboxValid = QCheckBox("Valid")
+        self.checkboxValid.toggled.connect(lambda:self.btnstate(self.checkboxValid))         
+        
         self.hbox = QVBoxLayout()
         self.hbox.setSpacing(10)
         self.widget.setLayout(self.hbox)
@@ -99,7 +110,8 @@ class QImageViewer(QMainWindow):
 
         self.hbox.addWidget(self.scrollArea)
         self.hbox.addWidget(self.scrollArea2)    
-        #self.hbox.addLayout(hbox)   
+        #self.hbox.addLayout(hbox)
+        self.hbox.addWidget(self.checkboxValid)
         self.hbox.addWidget(self.label)
         self.hbox.addWidget(self.label_volume)
         
@@ -122,6 +134,13 @@ class QImageViewer(QMainWindow):
 
         self.animating=False
         self.setAcceptDrops(True)
+        
+        self.socket=None # Remote control
+        
+        self.valids=np.ones(1, dtype='uint8' )
+
+        self.toggler = -1
+
         
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat("text/plain"):
@@ -170,8 +189,38 @@ class QImageViewer(QMainWindow):
     
     def animate(self):
         self.nextVol(1)
-    
+   
+    def remote_start(self):
+        if self.socket is None:
+            self.socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM);
+            self.socket.connect(('localhost',50000))
+            self.remoteAct.checked=True
+        else: # disconnect
+            self.socket.sendall(b'reset')
+            self.socket.close()
+            self.socket=None
+            self.remoteAct.checked=False
+            
+    def remote_send(self, command):
+        if not (self.socket is None):
+            self.socket.sendall(command)
+            
+    def toggle(self):
+        if self.toggler==-1:
+            self.toggler=self.nvol
+        else:
+            last=self.nvol #self.toggler
+            self.nextVol(self.toggler-self.nvol)
+            self.toggler=last
+            
     def nextVol(self, direction):
+        self.remote_send(b'next %d'%direction)
+            
+        if 'avi' in self.filname:
+            self.nlayer += direction
+            self.choose_layer(self.nlayer)
+            return
+            
         self.nvol += direction
         if self.nvol<0:
             self.nvol=len(self.fils)-1
@@ -180,18 +229,22 @@ class QImageViewer(QMainWindow):
         self.load1(self.nvol)
         
     # Moving mouse in axial profile window
-    def getPos(self , event):
-            x = event.pos().x()
-            y = event.pos().y()
-            y=y/200.0 * np.shape(self.av)[0]
-            #x=x/200 * np.shape(self.av)[1]
-            #print(y)
-            y=int(y)
-            self.choose_layer(y)
-            self.nlayer = y
+    def axial_win_click(self , event):
+        x = event.pos().x()
+        y = event.pos().y()
+        y=y/200.0 * np.shape(self.av)[0] # TODO: why 200?
+        y=int(y)
+        self.choose_layer(y)
+        self.nlayer = y
+        
+    def main_move(self , event):
+        x = event.pos().x()
+        y = event.pos().y()
+        self.display_coords( event.pos().x()/self.scaleFactor, event.pos().y()/self.scaleFactor, self.nlayer)      
+    
+    def display_coords(self,x,y,z):
+        self.label.setText('x: %03d/%03d, y: %03d/%03d, z: %03d/%03d'%(x,self.width,y,self.height,z,self.n_depths))
 
-
-      
     def choose_layer(self,n,first_time=False):
     
         n_depths=np.shape(self.dset)[2]
@@ -206,16 +259,16 @@ class QImageViewer(QMainWindow):
 
         self.nlayer=n
         
-        if self.doMIP and (n>=2) and (n<(n_depths+3)):
+        if self.doMIP and (n>=MIP_PIXELS) and (n<(n_depths+MIP_PIXELS+1)):
             # Max. intensity projection. Take max in layer-2 to layer+2
-            data=self.dset[:,:,int(n)-2:int(n)+3]
+            data=self.dset[:,:,int(n)-MIP_PIXELS:int(n)+MIP_PIXELS+1]
             data=np.max(data,2)
         else:
             self.doMIP=False # Can't do MIP at edge of depths
             
         if self.doLog:
             data=np.array(data)
-            print ( np.shape(data), np.nanmean(data), np.max(data) )
+            #print ( np.shape(data), np.nanmean(data), np.max(data) )
             data=np.log10(data)
             data[np.isinf(data)]=np.nan
             data[data<1]=np.nan;
@@ -233,12 +286,12 @@ class QImageViewer(QMainWindow):
             data[np.isnan(data)]=0
             data[np.isinf(data)]=0
             
-            print( np.histogram(data) )
+            #print( np.histogram(data) )
             # Clamp
             data[data<0]=0;
             data[data>1]=1;
 
-            print (np.max(data), np.mean(data), np.min(data), mean1, std1, mean2, std2 )
+            #print (np.max(data), np.mean(data), np.min(data), mean1, std1, mean2, std2 )
             data_bits=np.array((10**data.T/np.max(10**data)*255.0),dtype='uint8')
         else: 
             data_bits=np.array((data.T/np.max(data)*255.0),dtype='uint8')
@@ -257,10 +310,15 @@ class QImageViewer(QMainWindow):
         # Needed to fix skew problem.
         #https://stackoverflow.com/questions/41596940/qimage-skews-some-images-but-not-others
 
+        self.image_current = data_bits;
+        
         image = QImage(data_bits.data, width, height, bytesPerLine, QImage.Format_Grayscale8)
         self.imageLabel.setPixmap(QPixmap.fromImage(image))
         self.scaleFactor = 1.0
-        self.label.setText('%03d of %03d'%(n+1,n_depths))
+        self.width=width
+        self.height=height
+        self.n_depths=n_depths
+        self.display_coords(0,0,n+1);
     
         # Update the axial across-section image
         av=self.avg # reload from image
@@ -271,10 +329,11 @@ class QImageViewer(QMainWindow):
 
         data_bits=np.require(data_bits, np.uint8, 'C')
         
-        if True:
+        #print( np.shape(self.dset) )
+        if len(np.shape(self.avg))>1:
             # get the shape of the array
             width, height = np.shape(self.avg)
-            print( height, width)
+            #print( height, width)
 
             # calculate the total number of bytes in the frame 
             totalBytes = data_bits.nbytes
@@ -282,8 +341,11 @@ class QImageViewer(QMainWindow):
             # divide by the number of rows
             bytesPerLine = int(totalBytes/height)        
             self.image2 = QImage(data_bits.data, width, height, bytesPerLine, QImage.Format_Grayscale8)   
+            
+            #self.image2.fromData(data_bits.data);            
         else:
-            self.image2.fromData(data_bits.data);
+            pass
+            
                
        # image2.scale(512,256)
         self.av=data_bits
@@ -295,19 +357,22 @@ class QImageViewer(QMainWindow):
         self.label_volume.setText( '%s (%d of %d)'%(self.filname,self.nvol+1, len(self.fils)) )        
         self.choose_layer(self.nlayer)
         
+    def btnstate(self,btn):
+        self.valids[self.nvol]=self.checkboxValid.isChecked()
+        
     def load1(self,nvol):
         self.nvol=nvol
         self.filname=self.fils[ nvol ]#os.path.join(dir_ssd, '%05d_vol.h5'%volnum)
-
+        self.checkboxValid.setChecked( self.valids[nvol] )
+        
         # TODO: get extension in better way
         parts=os.path.splitext(self.filname)
-        print(parts)
+        #print(parts)
         if parts[1]=='.h5':
             self.loadh5(self.filname)
         elif parts[1]=='.mat':
             self.loadMat(self.filname)
         elif parts[1]=='.avi':
-            import skvideo.io  
             print("Loading...")
             videodata = skvideo.io.vread(self.filname)
 
@@ -321,7 +386,7 @@ class QImageViewer(QMainWindow):
             else:
                 self.dset=np.transpose( videodata, [1, 2, 0] ) # Works for raw videos from MATLAB
             print("done...")
-            self.avg = np.zeros( (5,5,5)) # TODO: Doesn't matter. Nothing to show.
+            self.avg = np.zeros( (5,5)) # TODO: Doesn't matter. Nothing to show.
             #self.dset=self.dset[..., np.newaxis] # Create a dummy last axial axis
             #print(self.videodata.shape, self.dset.shape)
             #print (np.max(self.dset[...,0]), np.mean(self.videodata[...,0]) )
@@ -352,7 +417,10 @@ class QImageViewer(QMainWindow):
         self.load1(0)
 
         #self.imageLabel2.setMouseTracking(True)
-        self.imageLabel2.mousePressEvent = self.getPos
+        self.imageLabel2.mousePressEvent = self.axial_win_click
+
+        self.imageLabel.setMouseTracking(True)
+        self.imageLabel.mouseMoveEvent = self.main_move
 
 #        self.choose_layer(self.nlayer,True) # loadh5 will do one
         
@@ -368,14 +436,18 @@ class QImageViewer(QMainWindow):
             
 
             self.scrollArea.setVisible(True)
-            self.printAct.setEnabled(True)
+            #self.printAct.setEnabled(True)
             self.fitToWidthAct.setEnabled(True)
             self.fitToWindowAct.setEnabled(True)
             self.updateActions()
 
             if not self.fitToWindowAct.isChecked():
                 self.imageLabel.adjustSize()
-    
+                
+    def set_files(self,fils):
+        self.fils=fils
+        self.valids=np.ones(len(fils), dtype='uint8' )
+        
     def open(self):
         #options = QFileDialog.Options()
         #fileName = QFileDialog.getOpenFileName(self, "Open File", QDir.currentPath())
@@ -383,21 +455,28 @@ class QImageViewer(QMainWindow):
         #                                          'Images (*.png *.jpeg *.jpg *.bmp *.gif)', options=options)
                                                   
  
+        ffilt='HDF5 files (*.h5);; All files (*.*)'
        #thedir = QFileDialog.getExistingDirectory(self, "Open Directory",
        #                                      "e:\drc" )
        #                                     # QFileDialog.ShowDirsOnly
        #                                      # QFileDialog.DontResolveSymlinks);
-        thedir = QFileDialog.getOpenFileName(self, "Choose file in directory",
-                                             self.def_dir, "All files (*.*)" );
+        thedir = QFileDialog.getOpenFileNames(self, "Choose file in directory",
+                                             self.def_dir, ffilt );
                                             # QFileDialog.ShowDirsOnly
                                              # QFileDialog.DontResolveSymlinks);
                                                                         
-        thedir=os.path.dirname(thedir[0]) # Now it's a file dialog, so get the dirname from the filname
+        if len(thedir)==0:
+            return
 
-        print (thedir)
+        if True:
+            self.set_files(thedir[0]) # filenames, ignore filter
+            self.def_dir=os.path.dirname( imageViewer.fils[0] ) # For next time, def dir good place
+             
+        else: # Old way to open files with wildards (glob)
+            thedir=os.path.dirname(thedir[0]) # Now it's a file dialog, so get the dirname from the filname
+            text, ok = QInputDialog.getText(self, 'Filename wildcards', 'Enter wildcards:')
+            self.loadDir( os.path.join( thedir, text) )
         
-        text, ok = QInputDialog.getText(self, 'Filename wildcards', 'Enter wildcards:')
-        self.loadDir( os.path.join( thedir, text) )
         if len(self.fils) > 0:
             if self.nlayer==-1:
                 self.init_image() # First-time init of image widget
@@ -484,21 +563,63 @@ class QImageViewer(QMainWindow):
         self.update_display()
     
     def about(self):
+        if getattr(sys, 'frozen', False):
+            # If the application is run as a bundle....
+            fil=open('version.txt','r')
+            with fil:
+                msg=fil.readlines();
+            msg='</p><p>'.join(msg)
+        else:
+            msg = subprocess.check_output(['git', 'log', '-1','--pretty=format:%h,%ad']).decode()
+            
         QMessageBox.about(self, "About Image Viewer",
-                          "<p>Sabesan Lab volume/directory browser.</p>")
+                          "<p>Sabesan Lab volume/directory browser.</p>"+"Version: "+msg)
+
+    def save(self):
+        fileName = QFileDialog.getSaveFileName(self, ("Save F:xile"),
+                                       "snapshot.png",
+                                       ("Images (*.png *.xpm *.jpg)"))
+        img = Image.fromarray(self.image_current, "L")
+        #print(fileName)
+        img.save(fileName[0])
+        
+    def video(self):
+        for nframe in range(0,len(self.fils)):
+            self.load1(nframe)
+            # Max. intensity projection. Take max in layer-2 to layer+2
+            data=self.dset[:,:,self.nlayer-MIP_PIXELS:self.nlayer+MIP_PIXELS+1]
+            data=np.max(data,2)
+            # Need to transpose x and y
+            if nframe==0:
+                videodata=np.zeros( (len(self.fils),data.shape[1],data.shape[0] ) )
+            videodata[nframe] = data.T
+        filename_movie=self.def_dir+'/video_MIP%02d.avi'%self.nlayer
+        print(filename_movie)
+        skvideo.io.vwrite(filename_movie, videodata );
+            
+
+    def export_valids(self):
+        fileName = QFileDialog.getSaveFileName(self, ("Save F:xile"),
+                                       self.def_dir+"/valids.csv",
+                                       ("Images (*.png *.xpm *.jpg)"))
+        np.savetxt(fileName[0], self.valids, delimiter=",",fmt='%d')
 
     def createActions(self):
         self.openAct = QAction("&Open...", self, shortcut="Ctrl+O", triggered=self.open)
-        self.printAct = QAction("&Print...", self, shortcut="Ctrl+P", enabled=False, triggered=self.print_)
+        self.saveAct = QAction("&Save...", self, shortcut="Ctrl+S", triggered=self.save)
+        self.videoAct = QAction("&Video...", self, shortcut="Ctrl+V", triggered=self.video)
+        self.exportAct = QAction("&Export Valids...", self, shortcut="Ctrl+E", triggered=self.export_valids)
+        #self.printAct = QAction("&Print...", self, shortcut="Ctrl+P", enabled=False, triggered=self.print_)
+        self.remoteAct = QAction("&Remote...", self, shortcut="Ctrl+R", enabled=True, checkable=True, checked=False, triggered=self.remote_start)
         self.exitAct = QAction("E&xit", self, shortcut="Ctrl+Q", triggered=self.close)
         self.zoomInAct = QAction("Zoom &In (25%)", self, shortcut="Ctrl++", enabled=False, triggered=self.zoomIn)
         self.zoomOutAct = QAction("Zoom &Out (25%)", self, shortcut="Ctrl+-", enabled=False, triggered=self.zoomOut)
-        self.normalSizeAct = QAction("&Normal Size", self, shortcut="Ctrl+S", enabled=False, triggered=self.normalSize)
-        self.fitToWidthAct = QAction("&Fit to Width", self, shortcut="Ctrl+S", enabled=False, triggered=self.fitToWidth)
+        self.normalSizeAct = QAction("&Normal Size", self, shortcut="Ctrl+N", enabled=False, triggered=self.normalSize)
+        self.fitToWidthAct = QAction("&Fit to Width", self, shortcut="Ctrl+T", enabled=False, triggered=self.fitToWidth)
         self.fitToWindowAct = QAction("&Fit to Window", self, enabled=False, checkable=True, shortcut="Ctrl+F",
                                       triggered=self.fitToWindow)
 
-        self.MIPAct = QAction("&MIP (-2 to +2)", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+M",
+        self.MIPAct = QAction("&MIP (-%d to +%d)"%(MIP_PIXELS,MIP_PIXELS), self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+M",
                                       triggered=self.MIP)
         self.logNormAct = QAction("&Log Normalize", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+L",
                                       triggered=self.logNorm)
@@ -506,6 +627,8 @@ class QImageViewer(QMainWindow):
                                       triggered=self.av2)
         self.av3Act = QAction("av&3", self, enabled=True, checkable=True, checked=False, shortcut="Ctrl+3",
                                       triggered=self.av3)
+        self.toggleAct = QAction("to&ggle", self, enabled=True, shortcut="Ctrl+G",
+                                      triggered=self.toggle)
                                       
         self.aboutAct = QAction("&About", self, triggered=self.about)
         self.aboutQtAct = QAction("About &Qt", self, triggered=qApp.aboutQt)
@@ -513,7 +636,10 @@ class QImageViewer(QMainWindow):
     def createMenus(self):
         self.fileMenu = QMenu("&File", self)
         self.fileMenu.addAction(self.openAct)
-        self.fileMenu.addAction(self.printAct)
+        self.fileMenu.addAction(self.saveAct)
+        self.fileMenu.addAction(self.videoAct)
+        self.fileMenu.addAction(self.exportAct)
+        self.fileMenu.addAction(self.remoteAct)
         self.fileMenu.addSeparator()
         self.fileMenu.addAction(self.exitAct)
 
@@ -530,6 +656,8 @@ class QImageViewer(QMainWindow):
         self.viewMenu.addSeparator()
         self.viewMenu.addAction(self.av2Act)
         self.viewMenu.addAction(self.av3Act)
+        
+        self.viewMenu.addAction(self.toggleAct)
 
         self.helpMenu = QMenu("&Help", self)
         self.helpMenu.addAction(self.aboutAct)
@@ -559,12 +687,17 @@ class QImageViewer(QMainWindow):
         scrollBar.setValue(int(factor * scrollBar.value()
                                + ((factor - 1) * scrollBar.pageStep() / 2)))
 
-def tester(data):
+def socket_callback(which_command,data):
     global imageViewer
-    print( np.shape(data), data )
-    imageViewer.dset=data
-    imageViewer.avg = np.mean( data, 1)
-    imageViewer.update_display()
+    if which_command=='data':
+        #print( np.shape(data), data )
+        imageViewer.dset=data
+        imageViewer.avg = np.mean( data, 1)
+        imageViewer.update_display()
+        imageViewer.label_volume.setText( '<remote data> 1/1')
+    elif which_command=='next':
+        imageViewer.nextVol(data)
+         
     
 if __name__ == '__main__':
     import sys
@@ -576,16 +709,31 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     imageViewer = QImageViewer()
 
-    listener_thread = Thread(target=pyshmem.do_listen, args=[tester] )
+    listener_thread = Thread(target=pyshmem.do_listen, args=[socket_callback] )
     listener_thread.daemon=True # So application will terminate even if this thread is alive
     listener_thread.start()    
-    
-    if len(sys.argv)>1:
+
+    #if len(sys.argv)>2:
+    #    param=sys.argv[1]+sys.arv[2] #concat strings. extension separated
+        
+    if len(sys.argv)>2:
+        imageViewer.set_files(sys.argv[1:]) #.split(' ')
+        #if self.nlayer==-1:
+        imageViewer.init_image() # First-time init of image widget
+        imageViewer.nextVol(0)
+        imageViewer.def_dir=os.path.dirname( imageViewer.fils[0] )
+    elif len(sys.argv)>1:
         param=sys.argv[1]
         if os.path.isfile(param):
             imageViewer.load_single(param)
+            imageViewer.def_dir=os.path.dirname( param )
         elif os.path.exists(param):
             imageViewer.def_dir=param # loadDir
+    else: # Load dummy. TODO: blank?
+        imageViewer.set_files(['F:/3D_registration/dummy.h5'])
+        imageViewer.init_image()
+        imageViewer.nextVol(0)
+        imageViewer.def_dir="F:/3D_registration/Results";
     imageViewer.show()
     sys.exit(app.exec_())
     

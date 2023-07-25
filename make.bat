@@ -1,3 +1,7 @@
+git log -1 --pretty=%%h_(%%ad) > version.txt
+echo|set /p="Built with PyInstaller: " >> version.txt
+date /t >> version.txt
+
 pyinstaller --noconfirm --clean -D SabView.py
 
 rem YUCK! Need to copy in ffmpeg stuff
